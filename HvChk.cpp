@@ -12,6 +12,38 @@
 #define GetSafeBootMode() (*(UCHAR *) (PKUSER_SHARED_DATA + 0x02ec))
 #define GetVirtualFlags() (*(UCHAR *) (PKUSER_SHARED_DATA + 0x02ed))
 
+// NtQuery Define 
+typedef struct _HV_DETAILS{
+    ULONG Data[4];
+} HV_DETAILS, * PHV_DETAILS;
+typedef struct _SYSTEM_HYPERVISOR_DETAIL_INFORMATION{
+    HV_DETAILS HvVendorAndMaxFunction;
+    HV_DETAILS HypervisorInterface;
+    HV_DETAILS HypervisorVersion;
+    HV_DETAILS HvFeatures;
+    HV_DETAILS HwFeatures;
+    HV_DETAILS EnlightenmentInfo;
+    HV_DETAILS ImplementationLimits;
+} SYSTEM_HYPERVISOR_DETAIL_INFORMATION, * PSYSTEM_HYPERVISOR_DETAIL_INFORMATION;
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, * PUNICODE_STRING;
+typedef enum _SYSTEM_INFORMATION_CLASS{
+    SystemHypervisorDetailInformation = 159 // q: SYSTEM_HYPERVISOR_DETAIL_INFORMATION
+} SYSTEM_INFORMATION_CLASS;
+EXTERN_C NTSTATUS NTAPI NtQuerySystemInformation(
+    IN  SYSTEM_INFORMATION_CLASS SystemInformationClass,
+    OUT PVOID               SystemInformation,
+    IN  ULONG                SystemInformationLength,
+    OUT PULONG              ReturnLength OPTIONAL);
+EXTERN_C NTSTATUS NTAPI SyscallTermMyProc(
+    IN HANDLE               ProcessHandle OPTIONAL,
+    IN NTSTATUS             ExitStatus);
+// NtQuery Define END
+
+
 #define _T_CHAR 'o'
 #define _F_CHAR 'x'
 #define TF(x) x?_T_CHAR:_F_CHAR
@@ -49,6 +81,36 @@ char* GetHvName(){
     presentVendor[12] = '\0';
     return presentVendor;
 }
+char* GetCpuName(){
+    char* presentVendor = new char[48];
+    cpuid_buffer_t regs;
+    __cpuid((INT32*)&regs, 0x80000002);
+    memcpy(presentVendor,&regs,16);
+    __cpuid((INT32*)&regs, 0x80000003);
+    memcpy(presentVendor+16,&regs,16);
+    __cpuid((INT32*)&regs, 0x80000004);
+    memcpy(presentVendor+32,&regs,32);
+    presentVendor[47] = '\0';
+    return presentVendor;
+}
+bool CheckKnownVendor(){
+    const char* presentVendor = GetHvName();
+    constexpr auto size      = 13;
+    // check against known vendor names
+    const char* vendors[]{
+        "KVMKVMKVM\0\0\0", // KVM 
+        "Microsoft Hv",    // Microsoft Hyper-V or Windows Virtual PC */
+        "VMwareVMware",    // VMware 
+        "XenVMMXenVMM",    // Xen 
+        "prl hyperv  ",    // Parallels
+        "VBoxVBoxVBox"     // VirtualBox 
+    };
+    for (const auto& vendor : vendors){
+        if (!memcmp(vendor, presentVendor, size)) return true;
+    }
+    return false;
+}
+
 
 //bool LBRStackChecks(){
 //// Save current LBR top of stack
@@ -86,7 +148,7 @@ bool CheckLBRBadVirt(){
 
 // resources https://secret.club/2020/04/13/how-anti-cheats-detect-system-emulation.html#synthetic-msrs
 bool KiSyntheticMsrCheck(){ 
-    #define HV_SYNTHETIC_MSR_RANGE_START 0x40000000
+    #define HV_SYNTHETIC_MSR_RANGE_START 0x40000002
     __try{
         __readmsr(HV_SYNTHETIC_MSR_RANGE_START);
     }
@@ -97,26 +159,26 @@ bool KiSyntheticMsrCheck(){
 }
 
 // resources https://secret.club/2020/04/13/how-anti-cheats-detect-system-emulation.html#cpuid-leaf-comparisons
-bool UmpIsSystemVirtualized() {
-    //CPUID Leaf Comparisons
-    unsigned int invalid_leaf = 0x13371337;
-    unsigned int valid_leaf   = 0x40000000;
-    int InvalidLeafResponse[4] = { 0,0,0,0 };
-    int ValidLeafResponse[4] = { 0,0,0,0 };
+bool CheckInvalidLeaf() {
+    constexpr unsigned int invalid_leaf = 0x04201337;
+    constexpr unsigned int valid_leaf   = 0x40000000;
 
-    __cpuid(InvalidLeafResponse, invalid_leaf);
-    __cpuid(ValidLeafResponse, valid_leaf);
+    _cpuid_buffer_t InvalidLeafResponse = {};
+    _cpuid_buffer_t ValidLeafResponse   = {};
 
-    if ((InvalidLeafResponse[0] != ValidLeafResponse[0]) ||
-        (InvalidLeafResponse[1] != ValidLeafResponse[1]) ||
-        (InvalidLeafResponse[2] != ValidLeafResponse[2]) ||
-        (InvalidLeafResponse[3] != ValidLeafResponse[3]))
-        return STATUS_HV_DETECTED;
-    return STATUS_HV_NOT_PRESENT;
+    __cpuid((INT32*)(&InvalidLeafResponse), invalid_leaf);
+    __cpuid((INT32*)(&ValidLeafResponse), valid_leaf);
+
+    if ((InvalidLeafResponse.eax != ValidLeafResponse.eax) ||
+        (InvalidLeafResponse.ebx != ValidLeafResponse.ebx) ||
+        (InvalidLeafResponse.ecx != ValidLeafResponse.ecx) ||
+        (InvalidLeafResponse.edx != ValidLeafResponse.edx))
+        return true;
+    return false;
 }
 
 // resources https://secret.club/2020/04/13/how-anti-cheats-detect-system-emulation.html#cpuid-leaf-comparisons
-bool UmpIsSystemVirtualized2(){
+bool CheckHighestLowFunctionLeaf(){
     cpuid_buffer_t regs;
     __cpuid((INT32*)&regs, 0x40000000);
 
@@ -128,13 +190,11 @@ bool UmpIsSystemVirtualized2(){
         reserved_regs.ebx != regs.ebx || 
         reserved_regs.ecx != regs.ecx || 
         reserved_regs.edx != regs.edx)
-            return STATUS_HV_DETECTED;
-    return STATUS_HV_NOT_PRESENT;
+        return true;
+    return false;
 }
 
-
-
-bool RdtscCpuid(){
+bool CheckTimeRdtscCpuid(){
     DWORD tsc1 = 0;
     DWORD tsc2 = 0;
     DWORD avg = 0;
@@ -149,7 +209,7 @@ bool RdtscCpuid(){
     return (avg < 500 && avg > 25) ? false : true;
 }
 
-bool RdtscpCpuid() {
+bool CheckTimeRdtscpCpuid() {
     unsigned int  blabla = 0;
     unsigned int tscp1 = 0;
     unsigned int tscp2 = 0;
@@ -167,8 +227,7 @@ bool RdtscpCpuid() {
     }
     return true;
 }
-bool RdtscHeap()
-{
+bool CheckTimeRdtscHeap() {
     DWORD tsc1;
     DWORD tsc2;
     DWORD tsc3;
@@ -221,7 +280,11 @@ bool be_take_time(){
     // count the average time it takes to execute a FYL2XP1 instruction
     for (size_t i = 0; i < measure_time; ++i){
         QueryPerformanceCounter(&start);
+        #ifdef _WIN64
         _asm_fyl2xp1();
+        #else
+        _asm FYL2XP1
+        #endif
         QueryPerformanceCounter(&end);
 
         auto delta = end.QuadPart - start.QuadPart;
@@ -236,7 +299,7 @@ bool be_take_time(){
 }
 
 // resources [check https://secret.club/2020/01/12/battleye-hypervisor-detection.html] #Improvement Part
-bool Fyl2xp1(){
+bool CheckTimeFyl2xp1Cpuid(){
     constexpr auto measure_times = 20;
     auto positives = 0;
     auto negatives = 0;
@@ -252,31 +315,86 @@ bool Fyl2xp1(){
     return decision;
 }
 
+// resources https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/hypervisor_detail.htm
+bool CheckSysHvInfo(){
+    SYSTEM_HYPERVISOR_DETAIL_INFORMATION systInformat{0};
+    ULONG retLenth = NULL;
+    NtQuerySystemInformation(SystemHypervisorDetailInformation,&systInformat,sizeof(SYSTEM_HYPERVISOR_DETAIL_INFORMATION), &retLenth);
+    return  systInformat.ImplementationLimits.Data[0] != 0     //SYSTEM_HYPERVISOR_DETAIL_INFORMATION->HV_IMPLEMENTATION_LIMITS->MaxVirtualProcessorCount
+        &&  systInformat.HypervisorInterface.Data[0] != 0      //SYSTEM_HYPERVISOR_DETAIL_INFORMATION->HV_HYPERVISOR_INTERFACE_INFO->Interface
+        &&  systInformat.EnlightenmentInfo.Data[0] != 0        //SYSTEM_HYPERVISOR_DETAIL_INFORMATION->HV_X64_ENLIGHTENMENT_INFORMATION
+        &&  systInformat.HvVendorAndMaxFunction.Data[0] != 0   //SYSTEM_HYPERVISOR_DETAIL_INFORMATION->HvVendorAndMaxFunction->Interface || SYSTEM_HYPERVISOR_DETAIL_INFORMATION->HvVendorAndMaxFunction->Reserved1
+        &&  systInformat.HvVendorAndMaxFunction.Data[1] != 0;  //SYSTEM_HYPERVISOR_DETAIL_INFORMATION->HV_IMPLEMENTATION_LIMITS->MaxVirtualProcessorCount
+}
+
+// resources https://secret.club/2020/04/13/how-anti-cheats-detect-system-emulation.html#debug-exception-db-w-tf
+int filter(unsigned int code, struct _EXCEPTION_POINTERS* ep, bool& bDetected, int& singleStepCount){
+    if (code != EXCEPTION_SINGLE_STEP){
+        bDetected = true;
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    singleStepCount++;
+    if ((size_t)ep->ExceptionRecord->ExceptionAddress != (size_t)BEShit + 11){
+        bDetected = true;
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+    bool bIsRaisedBySingleStep = ep->ContextRecord->Dr6 & (1 << 14);
+    bool bIsRaisedByDr0 = ep->ContextRecord->Dr6 & 1;
+    if (!bIsRaisedBySingleStep || !bIsRaisedByDr0){
+        bDetected = true;
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+bool SehCpuid(){
+    bool bDetected = 0;
+    int singleStepCount = 0;
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    GetThreadContext(GetCurrentThread(), &ctx);
+    ctx.Dr0 = (size_t)BEShit + 11;
+    ctx.Dr7 = 1;
+    SetThreadContext(GetCurrentThread(), &ctx);
+    __try{
+        BEShit();
+    }
+    __except (filter(GetExceptionCode(), GetExceptionInformation(), bDetected, singleStepCount)){
+        if (singleStepCount != 1){
+            bDetected = 1;
+        }
+    }
+    return bDetected;
+}
 
 int main(){
+    printf("---------------\n");
+    printf("-SYSTEM--------\n");
     printf("System:      %d %d.%d\n",GetBuildNumber(),GetMajorVersion(),GetMinorVersion());
     printf("SafeBoot:    %c\n", TF(GetSafeBootMode()));
     printf("HVM support: %c\n",TF(GetVirtualFlags()));
+    printf("HvInfo:      %c\n",TF(CheckSysHvInfo()));
     printf("---------------\n");
     printf("-FLAG----------\n");
     printf("Cpuid:       %c\n",TF(CpuidCheck()));
+    printf("CpuidLeaf1:  %c\n",TF(CheckInvalidLeaf()));
+    printf("CpuidLeaf2:  %c\n",TF(CheckHighestLowFunctionLeaf()));
     printf("Msr:         %c\n",TF(KiSyntheticMsrCheck()));
     printf("Indv:        %c\n",TF(CheckIndv()));
     printf("LBRBadVirt:  %c\n",TF(CheckLBRBadVirt()));
-    printf("Leaf1:       %c\n",TF(UmpIsSystemVirtualized()));
-    printf("Leaf2:       %c\n",TF(UmpIsSystemVirtualized2()));
     printf("---------------\n");
     printf("-TIME----------\n");
-    printf("Rdtsc:       %c\n",TF(RdtscCpuid()));
-    printf("Rdtscp:      %c\n",TF(RdtscpCpuid()));
+    printf("Rdtsc:       %c\n",TF(CheckTimeRdtscCpuid()));
+    printf("Rdtscp:      %c\n",TF(CheckTimeRdtscpCpuid()));
+    printf("Fyl2xp1:     %c\n",TF(CheckTimeFyl2xp1Cpuid()));
     printf("---------------\n");
     printf("-TIME??--------\n");
-    printf("Rdtsc(Heap): %c\n",TF(RdtscHeap()));
-    printf("Fyl2xp1:     %c\n",TF(Fyl2xp1()));
-
+    printf("Rdtsc(Heap): %c\n",TF(CheckTimeRdtscHeap()));
     printf("---------------\n");
+    printf("-VMX-Trap------\n");
+    printf("BE:          %c\n",TF(SehCpuid()));
     printf("-VENDOR--------\n");
-    printf("-cpuid:      %s\n",GetHvName());
+    printf("Known:       %c\n",TF(CheckKnownVendor()));
+    printf("HyperVisor:  %s\n",GetHvName());
+    printf("Hardware:    %s\n",GetCpuName());
     
 
     return 0;

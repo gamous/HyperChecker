@@ -17,7 +17,6 @@ nop
 ret
 BEShit ENDP
 
-
 CheckInd PROC
 pushfq
 cli
@@ -29,9 +28,6 @@ pop rax                ; Proper system behaviour will have AL = 1; Hypervisor/em
 popfq
 ret
 CheckInd ENDP
-
-
-
 
 LBRVirt PROC
  mov rcx, 01D9h
