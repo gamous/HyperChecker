@@ -365,6 +365,10 @@ bool SehCpuid(){
 
 int main(){
     printf("---------------\n");
+    printf("-HVCHK---------\n");
+    printf("True(Detected): %c\n",TF(true));
+    printf("False(Passed):  %c\n",TF(false));
+    printf("---------------\n");
     printf("-SYSTEM--------\n");
     printf("System:      %d %d.%d\n",GetBuildNumber(),GetMajorVersion(),GetMinorVersion());
     printf("SafeBoot:    %c\n", TF(GetSafeBootMode()));
@@ -408,6 +412,5 @@ int main(){
     else{
         printf("No Hypervisor\n");
     }
-
     return 0;
 }
