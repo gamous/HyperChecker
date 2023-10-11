@@ -48,10 +48,9 @@ EXTERN_C NTSTATUS NTAPI SyscallTermMyProc(
 #define _F_CHAR 'x'
 #define TF(x) x?_T_CHAR:_F_CHAR
 
-
-EXTERN_C BOOL CheckInd();
-EXTERN_C UINT LBRVirt();
-EXTERN_C void BEShit();
+EXTERN_C BOOL _asm_check_ind();
+EXTERN_C BOOL _asm_check_lbr();
+EXTERN_C void _asm_set_tf();
 EXTERN_C void __fastcall _asm_fyl2xp1();
 
 typedef struct _cpuid_buffer_t{
@@ -129,16 +128,15 @@ bool CheckKnownVendor(){
 
 bool CheckIndv(){
     __try {
-        CheckInd();
+        return _asm_check_ind();
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
-    return true;
 }
 bool CheckLBRBadVirt(){
     __try {
-        LBRVirt();
+        return _asm_check_lbr();
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -334,7 +332,7 @@ int filter(unsigned int code, struct _EXCEPTION_POINTERS* ep, bool& bDetected, i
         return EXCEPTION_CONTINUE_SEARCH;
     }
     singleStepCount++;
-    if ((size_t)ep->ExceptionRecord->ExceptionAddress != (size_t)BEShit + 11){
+    if ((size_t)ep->ExceptionRecord->ExceptionAddress != (size_t)_asm_set_tf + 11){
         bDetected = true;
         return EXCEPTION_EXECUTE_HANDLER;
     }
@@ -351,11 +349,11 @@ bool SehCpuid(){
     CONTEXT ctx{};
     ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
     GetThreadContext(GetCurrentThread(), &ctx);
-    ctx.Dr0 = (size_t)BEShit + 11;
+    ctx.Dr0 = (size_t)_asm_set_tf + 11;
     ctx.Dr7 = 1;
     SetThreadContext(GetCurrentThread(), &ctx);
     __try{
-        BEShit();
+        ((void(*)())&_asm_set_tf)();
     }
     __except (filter(GetExceptionCode(), GetExceptionInformation(), bDetected, singleStepCount)){
         if (singleStepCount != 1){
@@ -377,25 +375,39 @@ int main(){
     printf("Cpuid:       %c\n",TF(CpuidCheck()));
     printf("CpuidLeaf1:  %c\n",TF(CheckInvalidLeaf()));
     printf("CpuidLeaf2:  %c\n",TF(CheckHighestLowFunctionLeaf()));
-    printf("Msr:         %c\n",TF(KiSyntheticMsrCheck()));
-    printf("Indv:        %c\n",TF(CheckIndv()));
-    printf("LBRBadVirt:  %c\n",TF(CheckLBRBadVirt()));
+    //printf("Msr:         %c\n",TF(KiSyntheticMsrCheck()));
+    //printf("Indv:        %c\n",TF(CheckIndv()));
+    //printf("LBRBadVirt:  %c\n",TF(CheckLBRBadVirt()));
     printf("---------------\n");
     printf("-TIME----------\n");
     printf("Rdtsc:       %c\n",TF(CheckTimeRdtscCpuid()));
     printf("Rdtscp:      %c\n",TF(CheckTimeRdtscpCpuid()));
     printf("Fyl2xp1:     %c\n",TF(CheckTimeFyl2xp1Cpuid()));
-    printf("---------------\n");
-    printf("-TIME??--------\n");
-    printf("Rdtsc(Heap): %c\n",TF(CheckTimeRdtscHeap()));
-    printf("---------------\n");
-    printf("-VMX-Trap------\n");
-    printf("BE:          %c\n",TF(SehCpuid()));
+    //printf("Rdtsc(Heap): %c\n",TF(CheckTimeRdtscHeap()));
+    //printf("---------------\n");
+    //printf("-VMX-Trap------\n");
+    //printf("BE:          %c\n",TF(SehCpuid()));
     printf("-VENDOR--------\n");
     printf("Known:       %c\n",TF(CheckKnownVendor()));
     printf("HyperVisor:  %s\n",GetHvName());
     printf("Hardware:    %s\n",GetCpuName());
-    
+    printf("---------------\n");
+    printf("-Result-------\n");
+    if( CpuidCheck()
+        ||CheckInvalidLeaf()
+        ||CheckHighestLowFunctionLeaf()
+        ||CheckTimeFyl2xp1Cpuid()
+        ||CheckTimeRdtscCpuid()
+        ||CheckTimeRdtscpCpuid()){
+        if(CheckKnownVendor())
+            printf("Detected Known Hypervisor:%s\n",GetHvName());
+        else
+            printf("Detected Unknown Hypervisor!!!\n");
+        
+    }
+    else{
+        printf("No Hypervisor\n");
+    }
 
     return 0;
 }

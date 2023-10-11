@@ -5,7 +5,7 @@ FYL2XP1
 ret
 _asm_fyl2xp1 ENDP
 
-BEShit PROC ;BE Shit 
+_asm_set_tf PROC
 pushfq
 or dword ptr[rsp],10100h
 popfq
@@ -15,9 +15,9 @@ nop
 nop
 nop
 ret
-BEShit ENDP
+_asm_set_tf ENDP
 
-CheckInd PROC
+_asm_check_ind PROC
 pushfq
 cli
 push 1                 ; Set cache data
@@ -27,10 +27,10 @@ invd                   ; Flush the caches but do not write back to system memory
 pop rax                ; Proper system behaviour will have AL = 1; Hypervisor/emulator that uses WBINVD or does nothing will have AL = 0.
 popfq
 ret
-CheckInd ENDP
+_asm_check_ind ENDP
 
-LBRVirt PROC
- mov rcx, 01D9h
+_asm_check_lbr PROC
+    mov rcx, 01D9h
     xor rdx, rdx
     wrmsr
     rdmsr
@@ -50,7 +50,7 @@ no_detect:
     mov rdx, 01D9h
     wrmsr
     ret
-LBRVirt ENDP
+_asm_check_lbr ENDP
 
 
 END
